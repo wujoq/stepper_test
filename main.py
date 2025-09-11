@@ -12,31 +12,30 @@ try:
 except ImportError:
     raise SystemExit("Zainstaluj RPi.GPIO: sudo apt-get install python3-rpi.gpio")
 
-# ====== KONFIGURACJA PINÓW ======
-PIN_DIR = 20   # Kierunek (DIR)
-PIN_STEP = 21  # Krok (STEP)
+# ====== PINY ======
+PIN_DIR = 21   # Kierunek (DIR)
+PIN_STEP = 20  # Krok (STEP)
 PIN_EN = 16    # Enable (aktywny niski)
 
-# ====== PARAMETRY MECHANIKI / KĄTA ======
-# 200 kroków na pełny obrót 360°
+# ====== MECHANIKA ======
 STEPS_PER_REV = 200
 DEG_PER_STEP = 360.0 / STEPS_PER_REV  # 1.8°/krok
 
-# ====== PARAMETRY KAMERY (HD) ======
-# Sensor 1/1.8" (~7.18 mm szerokości aktywnej), rozdzielczość 1920x1080
-F_MM = 16.0            # ogniskowa (mm)
-RES_X = 1920           # piksele w poziomie (HD)
-SENSOR_WIDTH_MM = 7.18 # szerokość aktywna sensora (mm)
+# ====== KAMERA (HD) ======
+# Sensor 1/1.8" (szerokość aktywna ~7.18 mm), rozdzielczość 1920x1080
+F_MM = 16.0             # ogniskowa (mm)
+RES_X = 1920            # liczba pikseli w poziomie
+SENSOR_WIDTH_MM = 7.18  # szerokość aktywna sensora (mm)
 
 # ogniskowa w pikselach (fx)
-FX_PX = F_MM * RES_X / SENSOR_WIDTH_MM  # ≈ 4278.55 px dla danych powyżej
+FX_PX = F_MM * RES_X / SENSOR_WIDTH_MM  # ≈ 4278.55 px
 
-# ====== PARAMETRY SYGNAŁÓW ======
+# ====== SYGNAŁY ======
 STEP_PULSE_S = 0.001
 SETUP_DELAY_S = 0.0005
 IDLE_DISABLE_AFTER_S = 0.2
 
-# ====== INICJALIZACJA ======
+# ====== GPIO ======
 def gpio_setup():
     GPIO.setmode(GPIO.BCM)
     GPIO.setwarnings(False)
@@ -67,11 +66,14 @@ def move_steps(steps: int, cw: bool):
     time.sleep(IDLE_DISABLE_AFTER_S)
     enable_driver(False)
 
+# ====== PRZELICZENIA ======
 def error_pix_to_steps(error_x_pix: float, fx_px: float = FX_PX) -> int:
     """
-    theta = atan(e_pix / fx_px) [rad]
-    steps = round(|theta_deg| / DEG_PER_STEP)
-    Dodatni error_x => ruch CW.
+    Przelicza błąd w pikselach (x=0 to środek kadru) na liczbę kroków silnika.
+      theta_rad = atan(error_x_pix / fx_px)
+      theta_deg = degrees(theta_rad)
+      steps     = round(|theta_deg| / DEG_PER_STEP)
+    Znak error_x determinuje kierunek (CW dla >0, CCW dla <0).
     """
     if error_x_pix == 0.0:
         return 0
@@ -84,9 +86,11 @@ def move_from_error(error_x_pix: float):
     steps = error_pix_to_steps(error_x_pix, FX_PX)
     if steps == 0:
         return
-    cw = (error_x_pix > 0)  # w razie odwrotu zmień na (< 0)
+    # Dodatni błąd -> ruch w prawo (CW), ujemny -> w lewo (CCW)
+    cw = (error_x_pix > 0)
     move_steps(steps, cw)
 
+# ====== SPRZĄTANIE ======
 def cleanup(*_):
     try:
         enable_driver(False)
@@ -95,23 +99,24 @@ def cleanup(*_):
     GPIO.cleanup()
     sys.exit(0)
 
-# ====== GŁÓWNA CZĘŚĆ ======
+# ====== MAIN ======
 if __name__ == "__main__":
     print(f"FX_PX (fx w pikselach) = {FX_PX:.2f} px  |  {DEG_PER_STEP:.3f}°/krok")
     gpio_setup()
     signal.signal(signal.SIGINT, cleanup)
     signal.signal(signal.SIGTERM, cleanup)
 
-    csv_file = "errors.csv"  # kolumny: frame_id, error_x (tab-separated)
+    # Plik z danymi (tab-separated): frame_id, error_x
+    csv_file = "errors.csv"
     print(f"Odczytuję dane z {csv_file}...")
 
     with open(csv_file, newline="") as f:
         reader = csv.DictReader(f, delimiter="\t")
         for row in reader:
             frame_id = int(row["frame_id"])
-            error_x = float(row["error_x"])
+            error_x = float(row["error_x"])   # x=0 to środek obrazu
             steps = error_pix_to_steps(error_x, FX_PX)
-            dir_txt = "CW" if error_x > 0 else "CCW"
+            dir_txt = "CW" if error_x > 0 else ("CCW" if error_x < 0 else "HOLD")
             print(f"frame {frame_id}: error_x={error_x:.2f} px -> steps={steps} dir={dir_txt}")
             move_from_error(error_x)
             time.sleep(0.05)
